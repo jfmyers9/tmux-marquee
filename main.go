@@ -109,6 +109,7 @@ func main() {
 
 	raw, _ := io.ReadAll(os.Stdin)
 	text := strings.TrimRight(string(raw), "\n")
+	text = ansiToTmux(text)
 
 	if o.maxLength > 0 {
 		text = truncateRunes(text, o.maxLength)
@@ -363,6 +364,133 @@ func truncateRunes(s string, maxRunes int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:maxRunes])
+}
+
+var ansiColors = [8]string{"black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"}
+
+// ansiToTmux converts ANSI SGR escape sequences to tmux #[...] style tags.
+// Non-SGR escape sequences are stripped.
+func ansiToTmux(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if i+1 < len(s) && s[i] == '\x1b' && s[i+1] == '[' {
+			// Find end of CSI sequence
+			j := i + 2
+			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';') {
+				j++
+			}
+			if j < len(s) && s[j] == 'm' {
+				params := s[i+2 : j]
+				tag := sgrToTmux(params)
+				if tag != "" {
+					out.WriteString("#[")
+					out.WriteString(tag)
+					out.WriteByte(']')
+				}
+				i = j + 1
+				continue
+			}
+			// Non-SGR CSI sequence — strip it
+			if j < len(s) {
+				i = j + 1
+			} else {
+				i = j
+			}
+			continue
+		}
+		out.WriteByte(s[i])
+		i++
+	}
+	return out.String()
+}
+
+func sgrToTmux(params string) string {
+	if params == "" || params == "0" {
+		return "default"
+	}
+	codes := strings.Split(params, ";")
+	var attrs []string
+	for ci := 0; ci < len(codes); ci++ {
+		n, err := strconv.Atoi(codes[ci])
+		if err != nil {
+			continue
+		}
+		switch {
+		case n == 0:
+			attrs = append(attrs, "default")
+		case n == 1:
+			attrs = append(attrs, "bold")
+		case n == 2:
+			attrs = append(attrs, "dim")
+		case n == 3:
+			attrs = append(attrs, "italics")
+		case n == 4:
+			attrs = append(attrs, "underscore")
+		case n == 7:
+			attrs = append(attrs, "reverse")
+		case n == 9:
+			attrs = append(attrs, "strikethrough")
+		case n == 22:
+			attrs = append(attrs, "nobold", "nodim")
+		case n == 23:
+			attrs = append(attrs, "noitalics")
+		case n == 24:
+			attrs = append(attrs, "nounderscore")
+		case n == 27:
+			attrs = append(attrs, "noreverse")
+		case n == 29:
+			attrs = append(attrs, "nostrikethrough")
+		case n >= 30 && n <= 37:
+			attrs = append(attrs, "fg="+ansiColors[n-30])
+		case n == 38:
+			if a, skip := parseExtendedColor("fg", codes[ci+1:]); a != "" {
+				attrs = append(attrs, a)
+				ci += skip
+			}
+		case n == 39:
+			attrs = append(attrs, "fg=default")
+		case n >= 40 && n <= 47:
+			attrs = append(attrs, "bg="+ansiColors[n-40])
+		case n == 48:
+			if a, skip := parseExtendedColor("bg", codes[ci+1:]); a != "" {
+				attrs = append(attrs, a)
+				ci += skip
+			}
+		case n == 49:
+			attrs = append(attrs, "bg=default")
+		case n >= 90 && n <= 97:
+			attrs = append(attrs, "fg=bright"+ansiColors[n-90])
+		case n >= 100 && n <= 107:
+			attrs = append(attrs, "bg=bright"+ansiColors[n-100])
+		}
+	}
+	return strings.Join(attrs, ",")
+}
+
+// parseExtendedColor handles 38;5;N (256-color) and 38;2;R;G;B (truecolor)
+func parseExtendedColor(layer string, rest []string) (string, int) {
+	if len(rest) < 1 {
+		return "", 0
+	}
+	mode, _ := strconv.Atoi(rest[0])
+	switch mode {
+	case 5: // 256-color: 38;5;N
+		if len(rest) < 2 {
+			return "", 1
+		}
+		return layer + "=colour" + rest[1], 2
+	case 2: // truecolor: 38;2;R;G;B
+		if len(rest) < 4 {
+			return "", 1
+		}
+		r, _ := strconv.Atoi(rest[1])
+		g, _ := strconv.Atoi(rest[2])
+		b, _ := strconv.Atoi(rest[3])
+		return fmt.Sprintf("%s=#%02x%02x%02x", layer, r, g, b), 4
+	}
+	return "", 1
 }
 
 func mustInt(s string) int {
