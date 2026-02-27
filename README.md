@@ -14,9 +14,10 @@ position persists between invocations via a state file keyed by
 
 ## Install
 
-Copy `tmux-marquee` somewhere on your `$PATH`:
+Build from source (requires Go 1.21+):
 
 ```sh
+go build -o tmux-marquee .
 cp tmux-marquee ~/.local/bin/
 ```
 
@@ -74,8 +75,7 @@ Content changes are detected via checksum. When the input text
 changes, the scroll position resets to the beginning.
 
 CJK and emoji characters are handled correctly (counted as 2
-display columns) when python3 is available. ASCII text uses a
-fast pure-bash path.
+display columns) via the `go-runewidth` library.
 
 ## License
 
