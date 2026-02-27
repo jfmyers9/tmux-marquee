@@ -71,9 +71,22 @@ has_nonascii() {
   [[ "$1" == *[!$'\x01'-$'\x7e']* ]]
 }
 
+# Style tag support: detect #[...] tmux formatting tags
+has_styles() {
+  [[ "$1" == *'#['* ]]
+}
+
+# Strip tmux style tags for width/hash calculations
+strip_styles() {
+  printf '%s' "$1" | sed 's/#\[[^]]*\]//g'
+}
+
 # Display width in terminal columns (CJK/emoji = 2, combining = 0)
 display_width() {
   local s="$1"
+  if has_styles "$s"; then
+    s=$(strip_styles "$s")
+  fi
   if ! has_nonascii "$s"; then
     echo "${#s}"
     return
@@ -94,60 +107,54 @@ print(w)
 " "$s"
 }
 
-# Extract substring by display columns (handles wide chars)
+# Extract substring by display columns (handles wide chars + style tags)
 slice_columns() {
   local s="$1" offset="$2" w="$3"
-  if ! has_nonascii "$s"; then
+  if ! has_styles "$s" && ! has_nonascii "$s"; then
     echo "${s:$offset:$w}"
     return
   fi
   python3 -c "
-import unicodedata, sys
-s, offset, width = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-
-def char_width(c):
-    cat = unicodedata.east_asian_width(c)
-    if cat in ('W', 'F'):
-        return 2
-    if unicodedata.category(c).startswith('M'):
-        return 0
+import unicodedata,sys
+s,offset,width=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+def cw(c):
+    cat=unicodedata.east_asian_width(c)
+    if cat in('W','F'):return 2
+    if unicodedata.category(c).startswith('M'):return 0
     return 1
-
-# Build column-to-char mapping
-cols = []
-for c in s:
-    cw = char_width(c)
-    cols.append((c, cw))
-
-total_cols = sum(w for _, w in cols)
-if total_cols == 0:
-    print('')
-    sys.exit(0)
-
-# Advance to offset column
-col = 0
-idx = 0
-while col < offset and idx < len(cols):
-    col += cols[idx][1]
-    idx += 1
-    if col > total_cols:
-        col %= total_cols
-        idx %= len(cols)
-
-# Collect chars for width columns
-result = []
-filled = 0
-while filled < width:
-    if idx >= len(cols):
-        idx = 0
-    c, cw = cols[idx]
-    if filled + cw > width:
-        result.append(' ')
-        break
-    result.append(c)
-    filled += cw
-    idx += 1
-print(''.join(result))
+# tokenize into style tags (zero-width) and characters
+toks=[];tc=0;i=0
+while i<len(s):
+    if s[i:i+2]=='#[':
+        e=s.find(']',i+2)
+        if e>=0:toks.append((True,s[i:e+1],0));i=e+1;continue
+    w=cw(s[i]);toks.append((False,s[i],w));tc+=w;i+=1
+if tc==0:print('');sys.exit(0)
+offset%=tc
+# column position for each token
+cols=[];c=0
+for is_s,v,w in toks:
+    cols.append(c)
+    if not is_s:c+=w
+# style preamble: all style tags up to offset
+pre=[]
+for i,(is_s,v,w) in enumerate(toks):
+    if is_s and cols[i]<=offset:pre.append(v)
+    elif not is_s and cols[i]>=offset:break
+# first char token at offset
+si=0
+for i,(is_s,v,w) in enumerate(toks):
+    if not is_s and cols[i]>=offset:si=i;break
+# collect visible output with wrap-around
+out=list(pre);filled=0;n=len(toks);idx=si;laps=0
+while filled<width and laps<3:
+    while idx<n and filled<width:
+        is_s,v,w=toks[idx]
+        if is_s:out.append(v);idx+=1;continue
+        if filled+w>width:out.append(' ');filled=width;break
+        out.append(v);filled+=w;idx+=1
+    idx=0;laps+=1
+print(''.join(out))
 " "$s" "$offset" "$w"
 }
 
@@ -184,9 +191,9 @@ fi
 
 # Compute display width
 text_cols=$(display_width "$text")
-unicode_mode=false
-if has_nonascii "$text"; then
-  unicode_mode=true
+complex_mode=false
+if has_nonascii "$text" || has_styles "$text"; then
+  complex_mode=true
 fi
 
 # If text fits, pass through unchanged
@@ -202,7 +209,11 @@ if [[ "$text_cols" -le "$width" ]]; then
 fi
 
 # Content hash for change detection
-content_hash=$(printf '%s' "$text" | cksum | cut -d' ' -f1)
+hash_text="$text"
+if has_styles "$text"; then
+  hash_text=$(strip_styles "$text")
+fi
+content_hash=$(printf '%s' "$hash_text" | cksum | cut -d' ' -f1)
 
 # Load state: position, hash, delay_counter
 pos=0
@@ -226,14 +237,18 @@ if [[ "$scroll_delay" -gt 0 ]] && [[ "$delay_counter" -lt "$scroll_delay" ]]; th
   tmp_file="$state_file.tmp.$$"
   printf '%s\n%s\n%s\n' "$content_hash" "0" "$delay_counter" > "$tmp_file"
   mv -f "$tmp_file" "$state_file"
-  echo "${text:0:$width}"
+  if [[ "$complex_mode" == true ]]; then
+    slice_columns "$text" 0 "$width"
+  else
+    echo "${text:0:$width}"
+  fi
   exit 0
 fi
 
 # Build scrollable text: text + separator (for seamless loop)
 scroll_text="${text}${separator}"
 
-if [[ "$unicode_mode" == true ]]; then
+if [[ "$complex_mode" == true ]]; then
   scroll_cols=$(display_width "$scroll_text")
 else
   scroll_cols=${#scroll_text}
@@ -253,7 +268,7 @@ if [[ "$direction" == "bounce" ]]; then
   if [[ "$bounce_pos" -ge "$bounce_range" ]]; then
     bounce_pos=$((cycle - bounce_pos))
   fi
-  if [[ "$unicode_mode" == true ]]; then
+  if [[ "$complex_mode" == true ]]; then
     visible=$(slice_columns "$text" "$bounce_pos" "$width")
   else
     visible="${text:$bounce_pos:$width}"
@@ -261,7 +276,7 @@ if [[ "$direction" == "bounce" ]]; then
   next_pos=$((pos + speed))
 elif [[ "$direction" == "right" ]]; then
   rpos=$(( (scroll_cols - pos) % scroll_cols ))
-  if [[ "$unicode_mode" == true ]]; then
+  if [[ "$complex_mode" == true ]]; then
     visible=$(slice_columns "$scroll_text" "$rpos" "$width")
   else
     visible=""
@@ -283,7 +298,7 @@ elif [[ "$direction" == "right" ]]; then
   next_pos=$((pos + speed))
 else
   # Left scroll (default)
-  if [[ "$unicode_mode" == true ]]; then
+  if [[ "$complex_mode" == true ]]; then
     visible=$(slice_columns "$scroll_text" "$pos" "$width")
   else
     visible=""
