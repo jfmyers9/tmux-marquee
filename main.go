@@ -39,6 +39,7 @@ type opts struct {
 	scrollDelay int
 	maxLength  int
 	reset      bool
+	align      string
 }
 
 func main() {
@@ -49,6 +50,7 @@ func main() {
 		separator: " - ",
 		direction: "left",
 		pad:       true,
+		align:     "left",
 	}
 
 	args := os.Args[1:]
@@ -79,6 +81,15 @@ func main() {
 		case "--max-length":
 			i++
 			o.maxLength = mustInt(args[i])
+		case "-a", "--align":
+			i++
+			switch args[i] {
+			case "left", "right", "center":
+				o.align = args[i]
+			default:
+				fmt.Fprintf(os.Stderr, "Invalid align value: %s (must be left, right, or center)\n", args[i])
+				os.Exit(1)
+			}
 		case "--reset":
 			o.reset = true
 		case "--help":
@@ -127,7 +138,16 @@ func main() {
 	if textCols <= o.width {
 		if o.pad {
 			padCount := o.width - textCols
-			fmt.Println(text + strings.Repeat(" ", padCount))
+			switch o.align {
+			case "right":
+				fmt.Println(strings.Repeat(" ", padCount) + text)
+			case "center":
+				left := padCount / 2
+				right := padCount - left
+				fmt.Println(strings.Repeat(" ", left) + text + strings.Repeat(" ", right))
+			default: // left
+				fmt.Println(text + strings.Repeat(" ", padCount))
+			}
 		} else {
 			fmt.Println(text)
 		}
@@ -515,6 +535,7 @@ Options:
   --direction DIR      Scroll direction: left, right, bounce (default: left)
   --pad                Pad short text with trailing spaces (default)
   --no-pad             Don't pad short text
+  -a, --align DIR      Alignment when text fits: left, right, center (default: left)
   --scroll-delay N     Wait N ticks before starting scroll (default: 0)
   --max-length N       Truncate input beyond N chars (0 = unlimited)
   --reset              Clear state for this ID and exit

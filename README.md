@@ -38,6 +38,7 @@ echo "long text" | tmux-marquee [OPTIONS]
 | `--direction DIR` | left | `left`, `right`, or `bounce` |
 | `--pad` | on | Pad short text with trailing spaces |
 | `--no-pad` | | Don't pad |
+| `-a, --align DIR` | left | Alignment when text fits: `left`, `right`, `center` |
 | `--scroll-delay N` | 0 | Wait N ticks before scrolling |
 | `--max-length N` | 0 | Truncate input beyond N chars |
 | `--reset` | | Clear state for this ID and exit |
@@ -55,6 +56,12 @@ Multiple segments in one marquee:
 
 ```tmux
 set -g status-right '#(echo "$(cmd1) | $(cmd2)" | tmux-marquee -w 80 -i status) | %H:%M'
+```
+
+Right-aligned short text:
+
+```tmux
+set -g status-right '#(my-cmd | tmux-marquee -w 40 -i sr -a right)'
 ```
 
 Dynamic width from tmux:
